@@ -41,38 +41,51 @@ class LazyTypeItem(NumericTreeWidgetItem):
         self._dummy_child = Qt.QTreeWidgetItem(self)
         self._dummy_child.setText(0, "Loading...")
 
+    CHUNK_SIZE = 100
+
     def load_objects(self):
-        """Load individual objects of this type using byid"""
+        """Load the first chunk of individual objects of this type using byid"""
         if self.objects_loaded:
             return
 
         try:
-            # Remove dummy child
             self.removeChild(self._dummy_child)
-
-            # Use byid to get individual objects
-            byid = self.type_stat.byid
-            total_count = len(byid)
-
-            # Show top 100 largest objects by size
-            for i in range(min(100, total_count)):
-                try:
-                    obj_set = byid[i]
-                    obj_item = ObjectItem(self, obj_set, i)
-                except Exception as e:
-                    error_item = Qt.QTreeWidgetItem(self)
-                    error_item.setText(0, f"Error loading object {i}: {e}")
-
-            # Add summary if we truncated
-            if total_count > 100:
-                summary_item = Qt.QTreeWidgetItem(self)
-                summary_item.setText(0, f"... and {total_count - 100:,} more objects")
-
+            self._byid = self.type_stat.byid
+            self._total_count = len(self._byid)
+            self._next_index = 0
+            self._more_item = None
+            self.load_more()
             self.objects_loaded = True
 
         except Exception as e:
             error_item = Qt.QTreeWidgetItem(self)
             error_item.setText(0, f"Error loading objects: {e}")
+
+    def load_more(self):
+        """Load the next chunk of objects, replacing the 'more objects' item"""
+        if self._more_item is not None:
+            self.removeChild(self._more_item)
+            self._more_item = None
+
+        end = min(self._next_index + self.CHUNK_SIZE, self._total_count)
+        for i in range(self._next_index, end):
+            try:
+                ObjectItem(self, self._byid[i], i)
+            except Exception as e:
+                error_item = Qt.QTreeWidgetItem(self)
+                error_item.setText(0, f"Error loading object {i}: {e}")
+        self._next_index = end
+
+        remaining = self._total_count - end
+        if remaining > 0:
+            self._more_item = Qt.QTreeWidgetItem(self)
+            self._more_item.setText(
+                0, f"... and {remaining:,} more objects (click to show {min(self.CHUNK_SIZE, remaining):,} more)")
+            self._more_item.setData(0, Qt.Qt.UserRole, "more-objects")
+            font = self._more_item.font(0)
+            font.setUnderline(True)
+            self._more_item.setFont(0, font)
+            self._more_item.setForeground(0, Qt.QColor("blue"))
 
 
 class ObjectItem(NumericTreeWidgetItem):
@@ -247,6 +260,7 @@ class MemoryProfiler:
             self.analysis_display.setSortingEnabled(True)
             self.analysis_display.sortByColumn(2, Qt.Qt.DescendingOrder)
             self.analysis_display.itemExpanded.connect(self._onItemExpanded)
+            self.analysis_display.itemClicked.connect(self._onItemClicked)
             splitter.addWidget(self.analysis_display)
 
             # Set splitter proportions
@@ -489,6 +503,12 @@ class MemoryProfiler:
                 item.setForeground(Qt.QColor("blue"))
             else:
                 item.setForeground(Qt.QColor("black"))
+
+    def _onItemClicked(self, item, column):
+        """Load another chunk of objects when a 'more objects' item is clicked"""
+        parent = item.parent()
+        if isinstance(parent, LazyTypeItem) and item.data(0, Qt.Qt.UserRole) == "more-objects":
+            parent.load_more()
 
     def _onItemExpanded(self, item):
         """Handle tree item expansion for lazy loading"""
